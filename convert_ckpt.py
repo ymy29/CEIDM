@@ -1,97 +1,14 @@
-# IntelliJ project files
-.idea
-*.iml
-out
-gen
+import torch
 
-### Vim template
-[._]*.s[a-w][a-z]
-[._]s[a-w][a-z]
-*.un~
-Session.vim
-.netrwhist
-*~
 
-### IPythonNotebook template
-# Temporary data
-.ipynb_checkpoints/
+def add_additional_channels(state_dict, num_additional_channels):
+    "state_dict should be just from unet model, not the entire SD or GLIGEN"
 
-### Python template
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+    if num_additional_channels != 0:
+        new_conv_weight = torch.zeros(320, 4+num_additional_channels, 3, 3 )
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-#lib/
-#lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*,cover
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-*.ipynb
-*.params
-# *.json
-.vscode/
-*.code-workspace/
-
-lib/pycocotools/_mask.c
-lib/nms/cpu_nms.c
-
-DATA/hico_det_clip*
-DATA/hico_det
-DATA/sd-v1-4.ckpt
-DATA/vg_clip*
-OUTPUT
-test2015
-*.pkl
-test2015/
-.ckpt
-*.ckpt
+        for key,value in state_dict.items():
+            if key == "input_blocks.0.0.weight":
+                old_conv_weight = value
+                new_conv_weight[:,0:4,:,:] = old_conv_weight
+                state_dict[key] = new_conv_weight
