@@ -1,133 +1,57 @@
-# qwen_test_triples_generate.py
-from dataset.hico_dataset import HICODataset
 import torch
 import torch.nn as nn
 import os
-import glob  
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+import transformers
+from transformers import pipeline
+from transformers import LlamaForCausalLM, LlamaTokenizer
+from transformers import CLIPTextModel, AutoTokenizer
+import re
+import requests
 import json
-from tqdm import tqdm
-import shutil
+import os
+import torch.nn.functional as F
 import dashscope
 from http import HTTPStatus
-import pickle
-import time
-from qwen-turbo import extract_triples
 
-# ==================== Configure parameters  ====================
-TEST_PROMPTS_FILE = "../test_prompts.json"
-TRIPLES_TEST_FILE = "../test_triples_update.json" # a new test dataset
-HICO_PKL_PATH = "../DATA/hico_det_test.pkl"
-UPDATED_HICO_PKL = "../DATA/hico_det_test_with_triples_update.pkl"
+from openai import OpenAI
+import os
 
-MAX_RETRIES = 3
-BATCH_SIZE = 4
+#- - - - - Extract triples- - -method - - #
+def extract_triples(prompt, version, model_path=None):
+    os.environ["DASHSCOPE_API_KEY"] = "sk.." 
+    client = OpenAI(
+        api_key=os.getenv("DASHSCOPE_API_KEY"), 
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", 
+    )
 
-# Qwen API configuration
-QWEN_API_KEY = "sk.."  
-QWEN_MODEL = "qwen-turbo"
+    with open('../template.txt', 'r') as f:
+        template = f.read().strip()
+    user_textprompt = f"Caption:{prompt} \n Let's start thinking about it:" 
+    textprompt = f"{' '.join(template)} \n {user_textprompt}"
 
-dashscope.api_key = QWEN_API_KEY
-# ==================== 1. Generate additional triples ====================
-def process_test_prompts():
-    """Processing test_prompts.json generates triples"""
-    with open(TEST_PROMPTS_FILE, 'r') as f:
-        test_data = json.load(f)
+    #Qwen API
+    response = client.chat.completions.create(
+        model="qwen3-32b",
+        messages=[
+            {'role': 'system', 'content': 'You are a helpful assistant.'},
+            {'role': 'user', 'content': textprompt}
+        ],
+        extra_body={"enable_thinking": False}
+    )
 
-    if os.path.exists(TRIPLES_TEST_FILE):
-        os.remove(TRIPLES_TEST_FILE)
-    
-    results = []
-    for i in tqdm(range(0, len(test_data), BATCH_SIZE), desc="Processing Test Prompts"):
-        batch = test_data[i:i+BATCH_SIZE]
-        for item in batch:
-            caption = item.get("prompt", "").strip()
-            if not caption:
-                continue
-            
-            triples = extract_triples(caption, version="default")
-            
-            print(f"File Name: {item['file_name']}")
-            print(f"Prompt: {caption}")
-            print(f"Triples: {triples}")
+    output = response.choices[0].message.content
 
-            results.append({
-                "file_name": item["file_name"],
-                "prompt": caption,
-                "triples": triples
-            })
-    
-    with open(TRIPLES_TEST_FILE, 'w') as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"Test triples saved to {TRIPLES_TEST_FILE}")
+    triples_dict = output
+    triples = []
+    pattern = r'\(([^,]+),\s*([^,]+),\s*([^)]+)\)'
+    matches = re.findall(pattern, triples_dict)
 
-# # ==================== 2. Update the hico_det_test.pkl file ====================
-# def update_hico_pkl():
-#     """Updated hico_det_test.pkl to add a triples field"""
-#     with open(HICO_PKL_PATH, 'rb') as f:
-#         hico_data = pickle.load(f)
-    
-#     with open(TRIPLES_TEST_FILE, 'r') as f:
-#         triples_data = json.load(f)
+    for match in matches:
+        h = match[0].strip().lower()
+        r = match[1].strip().lower()
+        t = match[2].strip().lower()
+        if h != 'h' and r != 'r' and t != 't': 
+            triples.append((h, r, t))
 
-#     triples_map = {item["file_name"]: item for item in triples_data if "triples" in item}
-    
-#     # Update the original data
-#     updated_count = 0
-#     for item in tqdm(hico_data, desc="Updating HICO Data"):
-#         file_name = item.get("file_name")
-#         if file_name and file_name in triples_map:
-#             item["triples"] = triples_map[file_name]["triples"]
-#             updated_count += 1
-    
-#     with open(HICO_PKL_PATH, 'wb') as f:
-#         pickle.dump(hico_data, f)
-#     print(f"Updated {updated_count}/{len(hico_data)} items. Saved to {HICO_PKL_PATH}")
-
-# ==================== The main execution process ====================
-if __name__ == "__main__":
-    # Executive-Function 1: Generate triples
-    if not os.path.exists(TRIPLES_TEST_FILE):
-        process_test_prompts()
-    else:
-        print(f"{TRIPLES_TEST_FILE} already exists, skipping processing")
-    
-    # Executive-Function 2: Update the .pkl file
-    # if os.path.exists(TRIPLES_TEST_FILE):
-    #     update_hico_pkl()
-    # else:
-    #     print(f"{TRIPLES_TEST_FILE} not found, cannot update HICO data")
-
-
-# ==================== 2. Update the hico_det_test.pkl file ====================
-# def update_hico_pkl():
-#     with open(HICO_PKL_PATH, 'rb') as f:
-#         hico_data = pickle.load(f)  
-#     with open(TRIPLES_TEST_FILE, 'r') as f:
-#         triples_data = json.load(f)
-
-#     triples_map = {item["file_name"]: item for item in triples_data if "triples" in item}
-
-#     updated_count = 0
-#     for item in tqdm(hico_data, desc="Updating HICO Data"):
-#         file_name = item["file_name"]
-#         if file_name in triples_map:
-#             item["triples"] = triples_map[file_name]["triples"]
-#             updated_count += 1
-    
-#     with open(HICO_PKL_PATH, 'wb') as f:
-#         pickle.dump(hico_data, f)
-#     print(f"Updated {updated_count}/{len(hico_data)} items. Saved to {HICO_PKL_PATH}")
-
-# if __name__ == "__main__":
-#     # init_components()
-
-    # if not os.path.exists(TRIPLES_TEST_FILE):
-    #     process_test_prompts()
-    # else:
-    #     print(f"{TRIPLES_TEST_FILE} already exists, skipping processing")
-    
-    # if os.path.exists(TRIPLES_TEST_FILE):
-    #     update_hico_pkl()
-    # else:
-    #     print(f"{TRIPLES_TEST_FILE} not found, cannot update HICO data")
-
+    return triples # obtain implicit interactive relationships
