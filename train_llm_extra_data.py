@@ -1,5 +1,3 @@
-
-# ==================== Generate additional triplets of inference data and update hico_det_test.pkl ====================
 from dataset.hico_dataset import HICODataset
 import torch
 import torch.nn as nn
@@ -9,118 +7,100 @@ import json
 from tqdm import tqdm
 import shutil
 from llm import extract_triples
-import pickle
 
-TEST_PROMPTS_FILE = "../test_prompts.json"
-TRIPLES_TEST_FILE = "../test_triples.json" # a new test dataset
-HICO_PKL_PATH = "../DATA/hico_det_test.pkl"
-UPDATED_HICO_PKL = "../DATA/hico_det_test_with_triples.pkl"
-
+DATA_DIR = "../FGAHOI/data/hico_20160224_det/hico_det_clip"
+CAPTION_FILE = "../captions.txt"
+TRIPLES_FILE = "../triples_results.json" # a new tain dataset
+NEW_DATA_DIR = "../dataset_with_triples"
 MAX_RETRIES = 3
 BATCH_SIZE = 4
 LLAMA_MODEL_PATH = "Llama-2-7b-chat-hf"
 
-# def init_components():
-    
-#     with open('../template.txt', 'r') as f:
-#         global PROMPT_TEMPLATE
-#         PROMPT_TEMPLATE = f.read()
+def init_components():
+    os.makedirs(NEW_DATA_DIR, exist_ok=True)
+    with open('../template.txt', 'r') as f:
+        global PROMPT_TEMPLATE
+        PROMPT_TEMPLATE = f.read()
+def process_captions():
 
-# # ==================== 1. Generate additional triples ====================
-def process_test_prompts():
-    with open(TEST_PROMPTS_FILE, 'r') as f:
-        test_data = json.load(f)  # Expected structure：[{"file_name": "xx.jpg", "prompt": "..."}, ...]
-    
-    # test_data = test_data[:12]   
+    with open(CAPTION_FILE, 'r') as f:
+        lines = [line.strip() for line in f.readlines()]
 
-    if os.path.exists(TRIPLES_TEST_FILE):
-        os.remove(TRIPLES_TEST_FILE) 
+    caption_data = []
+    for line in lines:
+        if not line:
+            continue
+        try:
+            file_part = line.split("File: ")[1].split(", Caption: ")
+            file_path = file_part[0].strip()
+            caption = file_part[1].strip()
+            caption_data.append((file_path, caption))
+        except:
+            print(f"Failed to parse line: {line}")
+
+    if os.path.exists(TRIPLES_FILE):
+        os.remove(TRIPLES_FILE) 
 
     results = []
-    for i in tqdm(range(0, len(test_data), BATCH_SIZE), desc="Processing Test Prompts"):
-        batch = test_data[i:i+BATCH_SIZE]
-        for item in batch:
+    for i in tqdm(range(0, len(caption_data), BATCH_SIZE), desc="Processing Captions"):
+        batch = caption_data[i:i+BATCH_SIZE]
+        for file_path, caption in batch:
             for attempt in range(MAX_RETRIES):
                 try:
                     triples = extract_triples(
-                        prompt=item["prompt"],
+                        prompt=caption,
                         version="default",
                         model_path=LLAMA_MODEL_PATH
                     )
                     results.append({
-                        "file_name": item["file_name"],
-                        "prompt": item["prompt"],
+                        "file_path": file_path,
+                        "caption": caption,
                         "triples": triples
                     })
                     break
                 except Exception as e:
                     if attempt == MAX_RETRIES-1:
                         results.append({
-                            "file_name": item["file_name"],
+                            "file_path": file_path,
                             "error": str(e)
                         })
 
-    with open(TRIPLES_TEST_FILE, 'w') as f:
+    with open(TRIPLES_FILE, 'w') as f:
         json.dump(results, f, indent=2)
-    print(f"Test triples saved to {TRIPLES_TEST_FILE}")
+    print(f"Triples saved to {TRIPLES_FILE}")
 
-# ==================== Review the fields for each piece of data in hico_det_test.pkl ====================
-
-PKL_PATH = "../DATA/hico_det_test.pkl"
-
-with open(PKL_PATH, 'rb') as f:
-    data = pickle.load(f)
-
-
-for i, item in enumerate(data[:3]):
-    print(item)
-
-
-# ==================== 2. Update hico_det_test.pkl====================
-# def update_hico_pkl():
-#     with open(HICO_PKL_PATH, 'rb') as f:
-#         hico_data = pickle.load(f)
+def update_data_files():
+    """Add triples to the original data file as new meta information"""
+    with open(TRIPLES_FILE, 'r') as f:
+        triples_data = json.load(f)
     
-#     with open(TRIPLES_TEST_FILE, 'r') as f:
-#         triples_data = json.load(f)
+    triples_map = {item["file_path"]: item for item in triples_data} 
+
+    for file_path in tqdm(glob.glob(os.path.join(DATA_DIR, "*.pt")), desc="Updating Files"):
+        try:
+            data = torch.load(file_path, map_location="cpu")
+   
+            #file_key = os.path.basename(file_path)
+            triples_info = triples_map.get(file_path, {})
+            
+            if "triples" in triples_info:
+                data["triples"] = triples_info["triples"]
+                
+                torch.save(data, file_path)  
+
+            else:
+                print(f"No triples found for {file_path}")
+                
+        except Exception as e:
+            print(f"Failed to process {file_path}: {str(e)}")
+
+if __name__ == "__main__":
     
-#     triples_map = {item["file_name"]: item for item in triples_data if "triples" in item}
-    
-#     updated_count = 0
-#     for item in tqdm(hico_data, desc="Updating HICO Data"):
-#         file_name = item["file_name"]
-#         if file_name in triples_map:
-#             item["triples"] = triples_map[file_name]["triples"]
-#             updated_count += 1
-    
-#     with open(HICO_PKL_PATH, 'wb') as f:
-#         pickle.dump(hico_data, f)
-#     print(f"Updated {updated_count}/{len(hico_data)} items. Saved to {HICO_PKL_PATH}")
+    init_components()
+    if not os.path.exists(TRIPLES_FILE):
+        process_captions()
+    else:
+        print(f"{TRIPLES_FILE} already exists, skipping processing")
 
-# if __name__ == "__main__":
-#     # init_components()
-
-
-#     if not os.path.exists(TRIPLES_TEST_FILE):
-#          process_test_prompts()
-#     else:
-#          print(f"{TRIPLES_TEST_FILE} already exists, skipping processing")
-    
-#     if os.path.exists(TRIPLES_TEST_FILE):
-#         update_hico_pkl()
-#     else:
-#         print(f"{TRIPLES_TEST_FILE} not found, cannot update HICO data")
-
-# with open(TRIPLES_TEST_FILE, 'r') as f:
-#     sample = json.load(f)[0]
-#     print(sample.keys()) 
-
-# with open(UPDATED_HICO_PKL, 'rb') as f:
-#     sample_data = pickle.load(f)[0]
-#     print(sample_data.get('triples', 'No triples field'))
-
-# with open(UPDATED_HICO_PKL, 'rb') as f:
-#     data = pickle.load(f) 
-    
-#     for idx, item in enumerate(data[:6], 1):
-#         print(json.dumps(item, indent=2, ensure_ascii=False, default=str)) 
+    update_data_files()
+    print("Data update completed. New data saved to:", NEW_DATA_DIR)
