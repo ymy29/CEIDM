@@ -1,69 +1,126 @@
-You are a master of knowledge graph extraction. You can analyze input captions and generate knowledge graphs containing both explicit and implicit relationships(include commonsense relationships like hand holding objects, spatial positions, etc). For example, given the input caption "A person is feeding a cat," you should not only extract explicit relationships (e.g., "feeding") but also supplement implicit relationships such as "the person's hand is holding food," "the cat is standing on the ground," and "the food is aligned with the cat's mouth."At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output format: (h, r, t) triples separated by newlines.
-The output should follow the format of the following example:
 
-Example 1:
-Caption: A person is feeding a cat.
-Analysis:From the sentence "A person is feeding a cat," we can directly obtain the explicit relationship: (person, feeding, cat). Based on commonsense knowledge, we can infer some implicit relationships: The person and the cat should be on the ground : (person, standing on, ground), (cat, standing on, ground); and the person should be near the cat : (person, near, cat); the person should be holding food in their hand when feeding the cat : (person's hand, holding, food); and the food should be aligned with the cat's mouth for feeding : (food, aligned with, cat's mouth).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (person, feeding, cat)
-        (person, near, cat)
-        (person's hand, holding, food)
-        (person, standing on, ground)
-        (cat, standing on, ground)
-        (food, aligned with, cat's mouth)
+# ==================== Generate additional triplets of inference data and update hico_det_test.pkl ====================
+from dataset.hico_dataset import HICODataset
+import torch
+import torch.nn as nn
+import os
+import glob  
+import json
+from tqdm import tqdm
+import shutil
+from llm import extract_triples
+import pickle
 
-Example 2:
-Caption: A person is blowing a cake.
-Analysis:From the sentence "A person is blowing a cake," we can directly obtain the explicit relationship:(person, blowing, cake).Based on commonsense knowledge, we can infer some implicit relationships: Blowing implies proximity to the object:(person, near, cake);candles are generally on cake:(candles,on,cake);the flame should be at the top of the candle:(flame, at, top of candles);blowing out candles should be a person's mouth blowing against the flame:(person's mouth, directed at, flame),(person's mouth, blowing, flame);the cake should be placed on the table and the person should be standing on the ground:(cake, placed on, table), (person, standing on, ground).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (person, blowing, cake)
-        (person's mouth, directed at, flame)
-        (person's mouth, blowing, flame)
-        (cake, on, table)
-        (candles, on, cake)
-        (flame, at, top of candles)
+TEST_PROMPTS_FILE = "../test_prompts.json"
+TRIPLES_TEST_FILE = "../test_triples.json" # a new test dataset
+HICO_PKL_PATH = "../DATA/hico_det_test.pkl"
+UPDATED_HICO_PKL = "../DATA/hico_det_test_with_triples.pkl"
 
-Example 3:
-Caption: A person is directing a airplane.
-Analysis:From the sentence "A person is directing a airplane," we can directly obtain the explicit relationship:(person, directing, airplane).Based on commonsense knowledge and scene logic, we can infer implicit relationships:The person is likely in a control tower: (person, standing in, control tower);the control tower must be grounded: (control tower, located on, ground);directing requires communication tools: (person's hand, operating, radio equipment);airplanes follow navigation signals: (airplane, receiving signals from, control tower);airplane should be in the sky:(airplane, in, sky);safe directing requires altitude alignment: (airplane, maintaining altitude, flight path);navigation instructions guide runway alignment: (airplane, aligning with, runway);safety protocols ensure separation: (airplane, maintaining distance, other aircraft).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (person, directing, airplane)
-        (person, standing in, control tower)
-        (control tower, located on, ground)
-        (person's hand, holding, radio equipment)
-        (airplane, maintaining altitude, flight path)
-        (airplane, aligning with, runway)
-        (airplane, maintaining distance, other aircraft)
+MAX_RETRIES = 3
+BATCH_SIZE = 4
+LLAMA_MODEL_PATH = "Llama-2-7b-chat-hf"
 
-Example 4:
-Caption: A girl is holding an umbrella.
-Analysis:From the sentence "A girl is holding an umbrella," we can directly obtain the explicit relationship: (girl, holding, umbrella). Based on commonsense knowledge, we can infer implicit relationships:The girl is standing on a stable surface: (girl, standing on, ground);the umbrella must be open to function : (umbrella, in state, open);the girl’s hand grasps the umbrella handle : (girl's hand, holding, umbrella handle);the umbrella is positioned above the girl to provide coverage : (umbrella, positioned above, girl);and the umbrella is used for protection from weather elements : (umbrella, used for, protection).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (girl, holding, umbrella)
-        (girl's hand, holding, umbrella handle)
-        (girl, standing on, ground)
-        (girl, standing under, umbrella)
-        (umbrella, in state, open)
+# def init_components():
+    
+#     with open('../template.txt', 'r') as f:
+#         global PROMPT_TEMPLATE
+#         PROMPT_TEMPLATE = f.read()
 
-Example 5:
-Caption: A person is holding a bag, another person is talking on a cell phone.
-Analysis:From the sentence "A person is holding a bag, another person is talking on a cell phone," we can directly obtain the explicit relationships:(person, holding, bag),(another person, talking, cell phone).Based on commonsense knowledge, we can infer the following implicit relationships:To hold a bag, the person's hand must interact with the bag : (person's hand, holding, bag);both individuals are likely standing on a stable surface:(person, standing on, ground), (another person, standing on, ground);the bag is positioned near the person holding it:(bag, near, person);the cell phone must be held close to the person's face/ear for conversation:(another person's hand, holding, cell phone), (cell phone, near, another person's ear);the two people are likely in proximity if described in the same scene:(person, near, another person);the cell phone is actively transmitting sound during the call:(cell phone, in use, voice transmission).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (person, holding, bag)
-        (another person, talking, cell phone)
-        (person's hand, holding, bag)
-        (person, standing on, ground)
-        (another person, standing on, ground)
-        (another person's hand, holding, cell phone)
-        (cell phone, closing to, another person's ear)
-        (person, near, another person)
-        (cell phone, in use, voice transmission)
+# # ==================== 1. Generate additional triples ====================
+def process_test_prompts():
+    with open(TEST_PROMPTS_FILE, 'r') as f:
+        test_data = json.load(f)  # Expected structure：[{"file_name": "xx.jpg", "prompt": "..."}, ...]
+    
+    # test_data = test_data[:12]   
 
-Example 6:
-Caption: A girl is reading a book, a boy is carrying a backpack.
-Analysis:From the sentence "A girl is reading a book, a boy is carrying a backpack," we can directly obtain the explicit relationships:(girl, reading, book),(boy, carrying, backpack).Based on commonsense knowledge, we can infer the following implicit relationships:Reading requires holding the book:(girl's hands, holding, book);reading requires visual focus:(girl, focusing on, book),(book, in state, open);both individuals are likely standing/sitting on a surface:(girl, standing on, ground),(boy, standing on, ground);objects are positioned near their holders:(book, near, girl),(backpack, near, boy);common scene proximity:(girl, near, boy);the position of the backpack should be on the boy's back:(backpack, attached to, boy's back);the backpack should contain study items:(backpack, containing, school supplies).At the same time, it is also necessary to ensure that the extracted implicit triplet relationship conforms to the semantics of the overall caption. In addition, it is also necessary to ensure that the actions in the generated implicit triplet are as close as possible to the type and form of the actions in the caption.
-Output: (girl, reading, book)
-        (boy, carrying, backpack)
-        (girl's hands, holding, book)
-        (girl, focusing on, book)
-        (book, in state, open)
-        (girl, standing on, ground)
-        (boy, standing on, ground)
-        (backpack, attached to, boy's back)
-        (backpack, containing, items)
+    if os.path.exists(TRIPLES_TEST_FILE):
+        os.remove(TRIPLES_TEST_FILE) 
+
+    results = []
+    for i in tqdm(range(0, len(test_data), BATCH_SIZE), desc="Processing Test Prompts"):
+        batch = test_data[i:i+BATCH_SIZE]
+        for item in batch:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    triples = extract_triples(
+                        prompt=item["prompt"],
+                        version="default",
+                        model_path=LLAMA_MODEL_PATH
+                    )
+                    results.append({
+                        "file_name": item["file_name"],
+                        "prompt": item["prompt"],
+                        "triples": triples
+                    })
+                    break
+                except Exception as e:
+                    if attempt == MAX_RETRIES-1:
+                        results.append({
+                            "file_name": item["file_name"],
+                            "error": str(e)
+                        })
+
+    with open(TRIPLES_TEST_FILE, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"Test triples saved to {TRIPLES_TEST_FILE}")
+
+# ==================== Review the fields for each piece of data in hico_det_test.pkl ====================
+
+PKL_PATH = "../DATA/hico_det_test.pkl"
+
+with open(PKL_PATH, 'rb') as f:
+    data = pickle.load(f)
+
+
+for i, item in enumerate(data[:3]):
+    print(item)
+
+
+# ==================== 2. Update hico_det_test.pkl====================
+# def update_hico_pkl():
+#     with open(HICO_PKL_PATH, 'rb') as f:
+#         hico_data = pickle.load(f)
+    
+#     with open(TRIPLES_TEST_FILE, 'r') as f:
+#         triples_data = json.load(f)
+    
+#     triples_map = {item["file_name"]: item for item in triples_data if "triples" in item}
+    
+#     updated_count = 0
+#     for item in tqdm(hico_data, desc="Updating HICO Data"):
+#         file_name = item["file_name"]
+#         if file_name in triples_map:
+#             item["triples"] = triples_map[file_name]["triples"]
+#             updated_count += 1
+    
+#     with open(HICO_PKL_PATH, 'wb') as f:
+#         pickle.dump(hico_data, f)
+#     print(f"Updated {updated_count}/{len(hico_data)} items. Saved to {HICO_PKL_PATH}")
+
+# if __name__ == "__main__":
+#     # init_components()
+
+
+#     if not os.path.exists(TRIPLES_TEST_FILE):
+#          process_test_prompts()
+#     else:
+#          print(f"{TRIPLES_TEST_FILE} already exists, skipping processing")
+    
+#     if os.path.exists(TRIPLES_TEST_FILE):
+#         update_hico_pkl()
+#     else:
+#         print(f"{TRIPLES_TEST_FILE} not found, cannot update HICO data")
+
+# with open(TRIPLES_TEST_FILE, 'r') as f:
+#     sample = json.load(f)[0]
+#     print(sample.keys()) 
+
+# with open(UPDATED_HICO_PKL, 'rb') as f:
+#     sample_data = pickle.load(f)[0]
+#     print(sample_data.get('triples', 'No triples field'))
+
+# with open(UPDATED_HICO_PKL, 'rb') as f:
+#     data = pickle.load(f) 
+    
+#     for idx, item in enumerate(data[:6], 1):
+#         print(json.dumps(item, indent=2, ensure_ascii=False, default=str)) 
